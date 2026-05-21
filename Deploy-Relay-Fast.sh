@@ -22,6 +22,54 @@ warn() { echo -e "${C_YELLOW}   WARN${C_RESET} $1"; }
 fail() { echo -e "${C_RED}   FAIL${C_RESET} $1"; exit 1; }
 info() { echo -e "${C_GRAY}   $1${C_RESET}"; }
 
+confirm_uninstall() {
+  if [[ "${XHTTP_FORCE_UNINSTALL:-0}" == "1" ]]; then
+    return 0
+  fi
+  local answer
+  echo -ne "${C_YELLOW}This will remove Xray, xhttp command, configs, logs, certificates, and installer files. Continue? [y/N]: ${C_RESET}"
+  read -r answer
+  [[ "$answer" =~ ^[Yy]$ ]] || fail "Uninstall cancelled"
+}
+
+uninstall_xhttp() {
+  echo -e "${C_CYAN}XHTTP Installer - Uninstall${C_RESET}"
+  require_root
+  confirm_uninstall
+
+  step "Stop services"
+  systemctl stop xray 2>/dev/null || true
+  systemctl disable xray 2>/dev/null || true
+
+  step "Remove systemd units"
+  rm -f /etc/systemd/system/xray.service
+  rm -rf /etc/systemd/system/xray.service.d
+  systemctl daemon-reload
+
+  step "Remove binaries and commands"
+  rm -f /usr/local/bin/xray
+  rm -f /usr/local/bin/xhttp
+
+  step "Remove configuration, logs, certificates, and work directories"
+  rm -rf /usr/local/etc/xray
+  rm -rf /var/log/xray
+  rm -rf /etc/xhttp-installer
+  rm -rf /opt/xhttp-installer
+  rm -rf /opt/xhttp-relay-fast
+  rm -rf /etc/ssl/xhttp
+  rm -rf /root/.acme.sh
+
+  if [[ -f /swapfile-xhttp ]]; then
+    step "Remove optional swapfile"
+    swapoff /swapfile-xhttp 2>/dev/null || true
+    sed -i '\|/swapfile-xhttp|d' /etc/fstab 2>/dev/null || true
+    rm -f /swapfile-xhttp
+  fi
+
+  ok "Uninstall complete"
+  warn "Vercel/Netlify/GitHub relay projects are not removed from provider dashboards."
+}
+
 read_default() {
   local prompt="$1" default="$2" value
   read -rp "$(echo -e "${C_WHITE}${prompt}${C_RESET} ${C_GRAY}[${default}]${C_RESET}: ")" value
@@ -43,6 +91,7 @@ load_previous_state() {
   PREV_MODE=""
   PREV_CFG_PLATFORM=""
   PREV_CFG_DOMAIN=""
+  PREV_CFG_DOMAIN_AUTO=""
   PREV_CFG_EMAIL=""
   PREV_CFG_PORT=""
   PREV_CFG_RELAY_PATH=""
@@ -56,6 +105,7 @@ load_previous_state() {
   PREV_MODE="${MODE:-}"
   PREV_CFG_PLATFORM="${CFG_PLATFORM:-}"
   PREV_CFG_DOMAIN="${CFG_DOMAIN:-}"
+  PREV_CFG_DOMAIN_AUTO="${CFG_DOMAIN_AUTO:-}"
   PREV_CFG_EMAIL="${CFG_EMAIL:-}"
   PREV_CFG_PORT="${CFG_INBOUND_PORT:-}"
   PREV_CFG_RELAY_PATH="${CFG_RELAY_PATH:-}"
@@ -121,6 +171,22 @@ sanitize_domain() {
   value="${value%%:*}"
   value="${value%.}"
   echo "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+public_ipv4() {
+  local ip
+  ip="$(curl -4 -fsS --max-time 6 https://api4.ipify.org 2>/dev/null || true)"
+  if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+  fi
+  [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  echo "$ip"
+}
+
+auto_upstream_domain() {
+  local ip
+  ip="$(public_ipv4)" || fail "Cannot detect this server public IPv4 for auto domain"
+  echo "${ip}.sslip.io"
 }
 
 require_root() {
@@ -237,7 +303,7 @@ install_xray() {
 
 collect_config() {
   step "Collect config"
-  local random_relay_path random_public_path
+  local random_relay_path random_public_path domain_default domain_input
   random_relay_path="$(random_xhttp_path "relay")"
   random_public_path="$(random_xhttp_path "edge")"
   while [[ "$random_public_path" == "$random_relay_path" ]]; do
@@ -260,7 +326,7 @@ collect_config() {
     *) fail "Invalid platform: $choice" ;;
   esac
 
-  CFG_DOMAIN="${XHTTP_DOMAIN:-${PREV_CFG_DOMAIN:-}}"
+  CFG_DOMAIN="${XHTTP_DOMAIN:-}"
   CFG_EMAIL="${XHTTP_EMAIL:-${PREV_CFG_EMAIL:-}}"
   CFG_PORT="${XHTTP_PORT:-${PREV_CFG_PORT:-443}}"
   CFG_RELAY_PATH="${XHTTP_PATH:-${PREV_CFG_RELAY_PATH:-$random_relay_path}}"
@@ -268,8 +334,24 @@ collect_config() {
   CFG_PROJECT_NAME="${XHTTP_PROJECT_NAME:-${PREV_CFG_PROJECT_NAME:-netfix-$(openssl rand -hex 3)}}"
   CFG_RELAY_HOST="${XHTTP_RELAY_HOST:-${PREV_RELAY_HOST:-}}"
 
-  [[ -n "$CFG_DOMAIN" ]] || CFG_DOMAIN="$(read_default "Domain pointed to this VPS" "xhttp.example.com")"
-  CFG_DOMAIN="$(sanitize_domain "$CFG_DOMAIN")"
+  if [[ -z "$CFG_DOMAIN" ]]; then
+    if [[ -n "${PREV_CFG_DOMAIN:-}" && "${PREV_CFG_DOMAIN_AUTO:-false}" != "true" ]]; then
+      domain_default="$PREV_CFG_DOMAIN"
+    else
+      domain_default="auto"
+    fi
+    domain_input="$(read_default "VPS upstream domain (auto or own domain)" "$domain_default")"
+  else
+    domain_input="$CFG_DOMAIN"
+  fi
+  domain_input="$(sanitize_domain "$domain_input")"
+  if [[ -z "$domain_input" || "$domain_input" == "auto" ]]; then
+    CFG_DOMAIN="$(auto_upstream_domain)"
+    CFG_DOMAIN_AUTO="true"
+  else
+    CFG_DOMAIN="$domain_input"
+    CFG_DOMAIN_AUTO="false"
+  fi
   [[ -n "$CFG_EMAIL" ]] || CFG_EMAIL="$(read_default "Email for Let's Encrypt" "admin@example.com")"
   CFG_PORT="$(read_default "Xray listen port" "$CFG_PORT")"
   CFG_RELAY_PATH="$(normalize_path "$(read_default "Server XHTTP path" "$CFG_RELAY_PATH")")"
@@ -280,7 +362,7 @@ collect_config() {
     CFG_RELAY_HOST="$(sanitize_domain "$(read_default "Netlify site domain after Git deploy, or leave placeholder" "${CFG_RELAY_HOST:-xhttp-git-xxxxxx.netlify.app}")")"
   fi
 
-  [[ "$CFG_DOMAIN" != "xhttp.example.com" ]] || fail "Please enter your real domain"
+  [[ "$CFG_DOMAIN" != "xhttp.example.com" ]] || fail "Please enter your real domain, or use auto"
 
   if [[ "$CFG_PLATFORM" == "vercel" ]]; then
     CFG_TOKEN="${VERCEL_TOKEN:-}"
@@ -289,6 +371,7 @@ collect_config() {
 
   ok "Platform: $CFG_PLATFORM"
   ok "Domain: $CFG_DOMAIN"
+  [[ "${CFG_DOMAIN_AUTO:-false}" == "true" ]] && ok "Domain mode: auto (no own domain required)"
   ok "Server path: $CFG_RELAY_PATH"
   ok "Public path: $CFG_PUBLIC_PATH"
   [[ "$CFG_PLATFORM" == "netlify" ]] && ok "Netlify host: $CFG_RELAY_HOST"
@@ -324,7 +407,7 @@ check_dns() {
     return 0
   fi
 
-  server_ip="$(curl -4 -fsS --max-time 6 https://api4.ipify.org 2>/dev/null || true)"
+  server_ip="$(public_ipv4 2>/dev/null || true)"
   raw_dns="$(
     {
       dig +short "$CFG_DOMAIN" A 2>/dev/null || true
@@ -589,8 +672,10 @@ install_panel() {
   cat > "$STATE_FILE" <<STATE
 INSTALL_DATE="$(date -Iseconds)"
 MODE="fast-relay"
+STATE_INSTALLER="${SCRIPT_DIR}/Deploy-Relay-Fast.sh"
 CFG_PLATFORM="${CFG_PLATFORM}"
 CFG_DOMAIN="${CFG_DOMAIN}"
+CFG_DOMAIN_AUTO="${CFG_DOMAIN_AUTO:-false}"
 CFG_EMAIL="${CFG_EMAIL}"
 CFG_INBOUND_PORT="${CFG_PORT}"
 CFG_RELAY_PATH="${CFG_RELAY_PATH}"
@@ -628,19 +713,25 @@ case "${1:-}" in
   link) echo "$CLIENT_LINK" ;;
   logs) journalctl -u xray -n 80 --no-pager ;;
   restart) systemctl restart xray && systemctl status xray --no-pager -n 8 ;;
+  uninstall)
+    SCRIPT="${STATE_INSTALLER:-/opt/xhttp-installer/Deploy-Relay-Fast.sh}"
+    [[ -f "$SCRIPT" ]] || { echo "Installer script not found: $SCRIPT"; exit 1; }
+    exec bash "$SCRIPT" uninstall
+    ;;
   *)
     echo "XHTTP fast-relay"
     echo "Platform : ${CFG_PLATFORM}"
     echo "Relay    : ${RELAY_URL}"
     [[ -n "${NETLIFY_PROJECT_DIR:-}" ]] && echo "Netlify files: ${NETLIFY_PROJECT_DIR}"
     echo "Domain   : ${CFG_DOMAIN}:${CFG_INBOUND_PORT}"
+    [[ "${CFG_DOMAIN_AUTO:-false}" == "true" ]] && echo "Domain mode: auto"
     echo "Path     : ${CFG_RELAY_PATH}"
     echo "Xray     : ${XRAY_INSTALLED_VERSION:-unknown}"
     [[ -n "${XRAY_OFFICIAL_VERSION:-}" ]] && echo "Official : ${XRAY_OFFICIAL_VERSION}"
     echo
     echo "$CLIENT_LINK"
     echo
-    echo "Commands: xhttp status | xhttp link | xhttp logs | xhttp restart"
+    echo "Commands: xhttp status | xhttp link | xhttp logs | xhttp restart | xhttp uninstall"
     ;;
 esac
 PANEL
@@ -711,4 +802,11 @@ main() {
   summary
 }
 
-main "$@"
+case "${1:-}" in
+  uninstall|--uninstall)
+    uninstall_xhttp
+    ;;
+  *)
+    main "$@"
+    ;;
+esac

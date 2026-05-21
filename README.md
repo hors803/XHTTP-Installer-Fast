@@ -19,6 +19,13 @@ For Vercel:
 VERCEL_TOKEN='your_vercel_token' bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
 ```
 
+Default install does not require your own domain. At the domain prompt, press Enter to use `auto`. The installer will use:
+
+- Vercel's generated `*.vercel.app` domain for the client link.
+- An automatic VPS upstream domain like `<VPS_IPV4>.sslip.io` for Let's Encrypt and Vercel-to-VPS TLS.
+
+If you already have your own domain pointed to the VPS IPv4, enter that domain instead of `auto`.
+
 For Netlify Git/manual deploy:
 
 ```bash
@@ -29,7 +36,7 @@ XHTTP_RELAY_HOST='your-site.netlify.app' bash <(curl -fsSL https://raw.githubuse
 
 - Debian 12+ or Ubuntu 20.04+
 - Root access
-- A domain A record pointing to the VPS IPv4
+- Your own domain is optional. By default the installer uses an automatic upstream domain based on the VPS IPv4.
 - TCP 443 open
 - TCP 80 recommended for Let's Encrypt HTTP-01 issuance/renewal
 
@@ -51,6 +58,14 @@ The installer:
 2. Renders the Vercel relay template.
 3. Deploys the relay to Vercel through the Vercel REST API.
 4. Prints the final VLESS link.
+
+The final VLESS link uses the Vercel domain. The VPS upstream domain is only used between Vercel and the VPS.
+
+No own domain example:
+
+```bash
+VERCEL_TOKEN='your_vercel_token' XHTTP_DOMAIN=auto bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
 
 ## Netlify Flow
 
@@ -98,6 +113,42 @@ xhttp status
 xhttp logs
 xhttp restart
 ```
+
+## Uninstall
+
+Interactive uninstall:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh) uninstall
+```
+
+After installation, you can also run:
+
+```bash
+xhttp uninstall
+```
+
+Non-interactive uninstall:
+
+```bash
+XHTTP_FORCE_UNINSTALL=1 bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh) uninstall
+```
+
+The uninstall command removes VPS-side files only:
+
+- Xray systemd service
+- `/usr/local/bin/xray`
+- `/usr/local/bin/xhttp`
+- `/usr/local/etc/xray`
+- `/var/log/xray`
+- `/etc/xhttp-installer`
+- `/opt/xhttp-installer`
+- `/opt/xhttp-relay-fast`
+- `/etc/ssl/xhttp`
+- `/root/.acme.sh`
+- `/swapfile-xhttp` if it exists
+
+It does not remove Vercel, Netlify, or GitHub projects from provider dashboards.
 
 ## Verify
 
