@@ -299,6 +299,7 @@ install_xray() {
   XRAY_INSTALLED_VERSION="$(xray_local_version || true)"
   ok "Xray installed: $(xray version | head -1)"
   [[ -n "${XRAY_OFFICIAL_VERSION:-}" ]] && ok "Official latest release: ${XRAY_OFFICIAL_VERSION}"
+  return 0
 }
 
 collect_config() {
@@ -375,6 +376,7 @@ collect_config() {
   ok "Server path: $CFG_RELAY_PATH"
   ok "Public path: $CFG_PUBLIC_PATH"
   [[ "$CFG_PLATFORM" == "netlify" ]] && ok "Netlify host: $CFG_RELAY_HOST"
+  return 0
 }
 
 configure_xhttp_tuning() {
