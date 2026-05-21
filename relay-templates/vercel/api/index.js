@@ -1,9 +1,5 @@
-import { Readable } from "node:stream";
-
 export const config = {
-  api: { bodyParser: false },
-  supportsResponseStreaming: true,
-  maxDuration: 60
+  runtime: "edge"
 };
 
 const TARGET_BASE = __TARGET_BASE_JSON__;
@@ -18,23 +14,16 @@ function mapPath(pathname) {
   return null;
 }
 
-export default async function handler(req, res) {
+export default async function handler(request) {
   try {
-    const host = req.headers.host || "localhost";
-    const url = new URL(req.url || "/", "https://" + host);
-    if (url.pathname === "/") {
-      res.statusCode = 200;
-      return res.end("OK");
-    }
+    const url = new URL(request.url);
+    if (url.pathname === "/") return new Response("OK", { status: 200 });
 
     const upstreamPath = mapPath(url.pathname);
-    if (!upstreamPath) {
-      res.statusCode = 404;
-      return res.end("Not Found");
-    }
+    if (!upstreamPath) return new Response("Not Found", { status: 404 });
 
-    const headers = {};
-    for (const [key, value] of Object.entries(req.headers)) {
+    const headers = new Headers();
+    for (const [key, value] of request.headers) {
       const k = key.toLowerCase();
       if ([
         "host",
@@ -52,27 +41,27 @@ export default async function handler(req, res) {
         "cf-connecting-ip"
       ].includes(k)) continue;
       if (k.startsWith("x-vercel-")) continue;
-      if (Array.isArray(value)) headers[k] = value.join(", ");
-      else if (value !== undefined) headers[k] = String(value);
+      headers.set(k, value);
     }
 
-    const opts = { method: req.method, headers, redirect: "manual" };
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      opts.body = Readable.toWeb(req);
-      opts.duplex = "half";
+    const opts = { method: request.method, headers, redirect: "manual" };
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      opts.body = request.body;
     }
 
     const upstream = await fetch(TARGET_BASE + upstreamPath + url.search, opts);
-    res.statusCode = upstream.status;
-    upstream.headers.forEach((value, key) => {
-      if (!["connection", "transfer-encoding"].includes(key.toLowerCase())) {
-        res.setHeader(key, value);
-      }
+    const responseHeaders = new Headers();
+    for (const [key, value] of upstream.headers) {
+      const k = key.toLowerCase();
+      if (["connection", "transfer-encoding"].includes(k)) continue;
+      responseHeaders.set(key, value);
+    }
+
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: responseHeaders
     });
-    if (!upstream.body) return res.end();
-    Readable.fromWeb(upstream.body).pipe(res);
   } catch {
-    res.statusCode = 502;
-    res.end("Bad Gateway");
+    return new Response("Bad Gateway", { status: 502 });
   }
 }
