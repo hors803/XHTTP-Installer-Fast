@@ -396,6 +396,7 @@ configure_xhttp_tuning() {
     info "xPaddingKey: ${XPADDING_KEY}"
     info "xPaddingHeader: ${XPADDING_HEADER}"
   fi
+  return 0
 }
 
 check_dns() {
