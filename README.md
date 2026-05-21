@@ -67,6 +67,17 @@ No own domain example:
 VERCEL_TOKEN='your_vercel_token' XHTTP_DOMAIN=auto bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
 ```
 
+If `*.vercel.app` is polluted or unreachable on the client network, bind your own custom domain to the Vercel project and use it for the client link:
+
+```bash
+VERCEL_TOKEN='your_vercel_token' \
+XHTTP_DOMAIN='your-vps-upstream.example.com' \
+XHTTP_RELAY_HOST='your-vercel-client-domain.example.com' \
+bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
+`XHTTP_DOMAIN` points to the VPS. `XHTTP_RELAY_HOST` points to Vercel.
+
 ## Netlify Flow
 
 Choose platform `2`.

@@ -361,6 +361,8 @@ collect_config() {
   CFG_PROJECT_NAME="$(read_default "Relay project name" "$CFG_PROJECT_NAME")"
   if [[ "$CFG_PLATFORM" == "netlify" ]]; then
     CFG_RELAY_HOST="$(sanitize_domain "$(read_default "Netlify site domain after Git deploy, or leave placeholder" "${CFG_RELAY_HOST:-xhttp-git-xxxxxx.netlify.app}")")"
+  elif [[ -n "${XHTTP_RELAY_HOST:-}" ]]; then
+    CFG_RELAY_HOST="$(sanitize_domain "$XHTTP_RELAY_HOST")"
   fi
 
   [[ "$CFG_DOMAIN" != "xhttp.example.com" ]] || fail "Please enter your real domain, or use auto"
@@ -376,6 +378,7 @@ collect_config() {
   ok "Server path: $CFG_RELAY_PATH"
   ok "Public path: $CFG_PUBLIC_PATH"
   [[ "$CFG_PLATFORM" == "netlify" ]] && ok "Netlify host: $CFG_RELAY_HOST"
+  [[ "$CFG_PLATFORM" == "vercel" && -n "${CFG_RELAY_HOST:-}" ]] && ok "Vercel client host override: $CFG_RELAY_HOST"
   return 0
 }
 
@@ -610,9 +613,18 @@ JSON
 
   url="$(echo "$response" | jq -r '.url // empty')"
   [[ -n "$url" ]] || { echo "$response"; fail "Vercel did not return deployment URL"; }
-  VERCEL_URL="https://${url}"
-  RELAY_HOST="$url"
-  ok "Vercel relay deployed: $VERCEL_URL"
+  VERCEL_DEPLOY_HOST="$url"
+  VERCEL_DEPLOY_URL="https://${url}"
+  if [[ -n "${CFG_RELAY_HOST:-}" ]]; then
+    RELAY_HOST="$CFG_RELAY_HOST"
+    VERCEL_URL="https://${CFG_RELAY_HOST}"
+    ok "Vercel relay deployed: ${VERCEL_DEPLOY_URL}"
+    ok "Client relay host: ${RELAY_HOST}"
+  else
+    RELAY_HOST="$url"
+    VERCEL_URL="https://${url}"
+    ok "Vercel relay deployed: $VERCEL_URL"
+  fi
 }
 
 write_netlify_project() {
