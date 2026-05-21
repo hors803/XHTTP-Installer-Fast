@@ -497,6 +497,8 @@ configure_xray() {
   step "Configure Xray"
   mkdir -p "$(dirname "$XRAY_CFG")" /var/log/xray
   touch /var/log/xray/access.log /var/log/xray/error.log
+  chmod 755 /var/log/xray
+  chmod 666 /var/log/xray/access.log /var/log/xray/error.log
 
   INBOUND_UUID="${XHTTP_UUID:-}"
   [[ -n "$INBOUND_UUID" ]] || INBOUND_UUID="$(xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
