@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "functions": {
+    "api/index.js": {
+      "memory": 128,
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "__PUBLIC_PATH__",
+      "destination": "/api/index"
+    },
+    {
+      "source": "__PUBLIC_PATH__/:path*",
+      "destination": "/api/index"
+    }
+  ],
+  "trailingSlash": false
+}

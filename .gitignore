@@ -1,0 +1,12 @@
+node_modules/
+.playwright-cli/
+.playwright-edge-profile/
+netlify-relay/
+tools/
+docs/
+netlify-deploy-key.json
+netlify-site.json
+github-contents.json
+github-tree.json
+XHTTP-Installer-main.zip
+*.log
