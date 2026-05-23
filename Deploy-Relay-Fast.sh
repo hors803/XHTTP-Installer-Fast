@@ -98,6 +98,7 @@ load_previous_state() {
   PREV_CFG_PUBLIC_PATH=""
   PREV_CFG_PROJECT_NAME=""
   PREV_RELAY_HOST=""
+  PREV_INBOUND_UUID=""
 
   [[ -f "$STATE_FILE" ]] || return 0
   # shellcheck source=/dev/null
@@ -112,6 +113,7 @@ load_previous_state() {
   PREV_CFG_PUBLIC_PATH="${CFG_PUBLIC_PATH:-}"
   PREV_CFG_PROJECT_NAME="${CFG_PROJECT_NAME:-}"
   PREV_RELAY_HOST="${RELAY_HOST:-}"
+  PREV_INBOUND_UUID="${INBOUND_UUID:-}"
   if [[ -n "$PREV_CFG_DOMAIN" || -n "$PREV_CFG_PLATFORM" ]]; then
     ok "Loaded previous config from $STATE_FILE"
   fi
@@ -161,6 +163,14 @@ normalize_path() {
 random_xhttp_path() {
   local prefix="$1"
   printf '/%s-%s-%s' "$prefix" "$(openssl rand -hex 4)" "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 18)"
+}
+
+uuid_v4() {
+  cat /proc/sys/kernel/random/uuid
+}
+
+is_uuid_v4() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
 }
 
 sanitize_domain() {
@@ -304,7 +314,7 @@ install_xray() {
 
 collect_config() {
   step "Collect config"
-  local random_relay_path random_public_path domain_default domain_input
+  local random_relay_path random_public_path domain_default domain_input uuid_default
   random_relay_path="$(random_xhttp_path "relay")"
   random_public_path="$(random_xhttp_path "edge")"
   while [[ "$random_public_path" == "$random_relay_path" ]]; do
@@ -334,6 +344,7 @@ collect_config() {
   CFG_PUBLIC_PATH="${XHTTP_PUBLIC_PATH:-${PREV_CFG_PUBLIC_PATH:-$random_public_path}}"
   CFG_PROJECT_NAME="${XHTTP_PROJECT_NAME:-${PREV_CFG_PROJECT_NAME:-netfix-$(openssl rand -hex 3)}}"
   CFG_RELAY_HOST="${XHTTP_RELAY_HOST:-${PREV_RELAY_HOST:-}}"
+  CFG_UUID="${XHTTP_UUID:-${PREV_INBOUND_UUID:-}}"
 
   if [[ -z "$CFG_DOMAIN" ]]; then
     if [[ -n "${PREV_CFG_DOMAIN:-}" && "${PREV_CFG_DOMAIN_AUTO:-false}" != "true" ]]; then
@@ -358,6 +369,12 @@ collect_config() {
   CFG_RELAY_PATH="$(normalize_path "$(read_default "Server XHTTP path" "$CFG_RELAY_PATH")")"
   CFG_PUBLIC_PATH="$(normalize_path "$(read_default "Relay public path" "$CFG_PUBLIC_PATH")")"
   [[ "$CFG_RELAY_PATH" != "$CFG_PUBLIC_PATH" ]] || fail "Server XHTTP path and Relay public path must be different"
+  if [[ -z "${XHTTP_UUID:-}" ]]; then
+    uuid_default="${CFG_UUID:-$(uuid_v4)}"
+    CFG_UUID="$(read_default "UUID v4" "$uuid_default")"
+  fi
+  CFG_UUID="$(echo "$CFG_UUID" | tr '[:upper:]' '[:lower:]')"
+  is_uuid_v4 "$CFG_UUID" || fail "UUID must be standard UUID v4 format"
   CFG_PROJECT_NAME="$(read_default "Relay project name" "$CFG_PROJECT_NAME")"
   if [[ "$CFG_PLATFORM" == "netlify" ]]; then
     CFG_RELAY_HOST="$(sanitize_domain "$(read_default "Netlify site domain after Git deploy, or leave placeholder" "${CFG_RELAY_HOST:-xhttp-git-xxxxxx.netlify.app}")")"
@@ -377,6 +394,7 @@ collect_config() {
   [[ "${CFG_DOMAIN_AUTO:-false}" == "true" ]] && ok "Domain mode: auto (no own domain required)"
   ok "Server path: $CFG_RELAY_PATH"
   ok "Public path: $CFG_PUBLIC_PATH"
+  ok "UUID: $CFG_UUID"
   [[ "$CFG_PLATFORM" == "netlify" ]] && ok "Netlify host: $CFG_RELAY_HOST"
   [[ "$CFG_PLATFORM" == "vercel" && -n "${CFG_RELAY_HOST:-}" ]] && ok "Vercel client host override: $CFG_RELAY_HOST"
   return 0
@@ -503,8 +521,7 @@ configure_xray() {
   chmod 755 /var/log/xray
   chmod 666 /var/log/xray/access.log /var/log/xray/error.log
 
-  INBOUND_UUID="${XHTTP_UUID:-}"
-  [[ -n "$INBOUND_UUID" ]] || INBOUND_UUID="$(xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  INBOUND_UUID="$CFG_UUID"
   [[ -f "$XRAY_CFG" ]] && cp "$XRAY_CFG" "${XRAY_CFG}.bak.$(date +%Y%m%d%H%M%S)" || true
 
   cat > "$XRAY_CFG" <<JSON
@@ -513,6 +530,26 @@ configure_xray() {
     "loglevel": "warning",
     "access": "/var/log/xray/access.log",
     "error": "/var/log/xray/error.log"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "blocked"
+      },
+      {
+        "type": "field",
+        "domain": ["geosite:category-ads-all"],
+        "outboundTag": "blocked"
+      },
+      {
+        "type": "field",
+        "ip": ["geoip:cn"],
+        "outboundTag": "blocked"
+      }
+    ]
   },
   "inbounds": [
     {
