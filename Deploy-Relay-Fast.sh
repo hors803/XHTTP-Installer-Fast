@@ -548,6 +548,11 @@ configure_xray() {
         "type": "field",
         "ip": ["geoip:cn"],
         "outboundTag": "blocked"
+      },
+      {
+        "type": "field",
+        "domain": ["geosite:cn"],
+        "outboundTag": "blocked"
       }
     ]
   },

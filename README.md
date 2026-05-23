@@ -54,6 +54,7 @@ The generated Xray server config includes routing rules to:
 
 - Block BitTorrent traffic.
 - Block destination IPs in `geoip:cn`.
+- Block CN domains in `geosite:cn`.
 - Block ad domains in `geosite:category-ads-all`.
 
 The UUID prompt accepts a custom UUID v4. Press Enter to use the generated standard UUID v4. Re-running the installer keeps the previous UUID by default.
