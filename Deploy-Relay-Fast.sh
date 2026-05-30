@@ -612,7 +612,7 @@ configure_xray() {
         "network": "xhttp",
         "security": "tls",
         "tlsSettings": {
-          "alpn": ["h2", "http/1.1"],
+          "alpn": ["h2"],
           "certificates": [
             { "certificateFile": "${SSL_CERT}", "keyFile": "${SSL_KEY}" }
           ]
