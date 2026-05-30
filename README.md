@@ -59,6 +59,23 @@ The generated Xray server config includes routing rules to:
 
 The UUID prompt accepts a custom UUID v4. Press Enter to use the generated standard UUID v4. Re-running the installer keeps the previous UUID by default.
 
+VLESS Encryption is enabled by default. The installer uses `xray vlessenc` and writes:
+
+- Server `settings.decryption`
+- Client link `encryption`
+
+Default authentication is `x25519` because the client link stays much shorter. To use post-quantum ML-KEM-768 authentication:
+
+```bash
+XHTTP_VLESS_ENC_AUTH=mlkem768 bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
+To disable VLESS Encryption:
+
+```bash
+XHTTP_VLESS_ENCRYPTION=none bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
 ## Vercel Flow
 
 Choose platform `1`.

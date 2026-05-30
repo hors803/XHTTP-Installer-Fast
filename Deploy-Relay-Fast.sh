@@ -99,6 +99,9 @@ load_previous_state() {
   PREV_CFG_PROJECT_NAME=""
   PREV_RELAY_HOST=""
   PREV_INBOUND_UUID=""
+  PREV_VLESS_DECRYPTION=""
+  PREV_VLESS_ENCRYPTION=""
+  PREV_VLESS_ENC_AUTH=""
 
   [[ -f "$STATE_FILE" ]] || return 0
   # shellcheck source=/dev/null
@@ -114,6 +117,9 @@ load_previous_state() {
   PREV_CFG_PROJECT_NAME="${CFG_PROJECT_NAME:-}"
   PREV_RELAY_HOST="${RELAY_HOST:-}"
   PREV_INBOUND_UUID="${INBOUND_UUID:-}"
+  PREV_VLESS_DECRYPTION="${VLESS_DECRYPTION:-}"
+  PREV_VLESS_ENCRYPTION="${VLESS_ENCRYPTION:-}"
+  PREV_VLESS_ENC_AUTH="${VLESS_ENC_AUTH:-}"
   if [[ -n "$PREV_CFG_DOMAIN" || -n "$PREV_CFG_PLATFORM" ]]; then
     ok "Loaded previous config from $STATE_FILE"
   fi
@@ -422,6 +428,42 @@ configure_xhttp_tuning() {
   return 0
 }
 
+configure_vless_encryption() {
+  step "Configure VLESS Encryption"
+  local mode="${XHTTP_VLESS_ENCRYPTION:-auto}" auth="${XHTTP_VLESS_ENC_AUTH:-${PREV_VLESS_ENC_AUTH:-x25519}}"
+  local section output
+
+  case "$mode" in
+    none|off|false|0)
+      VLESS_DECRYPTION="none"
+      VLESS_ENCRYPTION="none"
+      VLESS_ENC_AUTH="none"
+      ok "VLESS Encryption disabled"
+      return 0
+      ;;
+  esac
+
+  case "$auth" in
+    x25519|X25519) section="X25519"; VLESS_ENC_AUTH="x25519" ;;
+    mlkem768|ML-KEM-768|mlkem|pq) section="ML-KEM-768"; VLESS_ENC_AUTH="mlkem768" ;;
+    *) fail "Invalid XHTTP_VLESS_ENC_AUTH: $auth (use x25519 or mlkem768)" ;;
+  esac
+
+  VLESS_DECRYPTION="${XHTTP_VLESS_DECRYPTION:-${PREV_VLESS_DECRYPTION:-}}"
+  VLESS_ENCRYPTION="${XHTTP_VLESS_ENCRYPTION_CLIENT:-${PREV_VLESS_ENCRYPTION:-}}"
+
+  if [[ -z "$VLESS_DECRYPTION" || -z "$VLESS_ENCRYPTION" || "${PREV_VLESS_ENC_AUTH:-}" != "$VLESS_ENC_AUTH" ]]; then
+    command -v xray >/dev/null 2>&1 || fail "xray is required to generate VLESS Encryption"
+    output="$(xray vlessenc)"
+    VLESS_DECRYPTION="$(printf '%s\n' "$output" | awk -F'"' -v section="$section" '$0 ~ "Authentication: " section {flag=1; next} flag && /"decryption":/ {print $4; exit}')"
+    VLESS_ENCRYPTION="$(printf '%s\n' "$output" | awk -F'"' -v section="$section" '$0 ~ "Authentication: " section {flag=1; next} flag && /"encryption":/ {print $4; exit}')"
+  fi
+
+  [[ -n "$VLESS_DECRYPTION" && -n "$VLESS_ENCRYPTION" ]] || fail "Failed to generate VLESS Encryption values"
+  ok "VLESS Encryption enabled: $VLESS_ENC_AUTH"
+  return 0
+}
+
 check_dns() {
   step "Check DNS"
   local server_ip domain_ip raw_dns
@@ -564,7 +606,7 @@ configure_xray() {
       "protocol": "vless",
       "settings": {
         "clients": [{ "id": "${INBOUND_UUID}", "flow": "" }],
-        "decryption": "none"
+        "decryption": "${VLESS_DECRYPTION}"
       },
       "streamSettings": {
         "network": "xhttp",
@@ -705,8 +747,9 @@ deploy_relay() {
 }
 
 build_client_link() {
-  local encoded_path encoded_extra extra_json tag
+  local encoded_path encoded_extra encoded_vless_encryption extra_json tag
   encoded_path="$(urlencode "$CFG_PUBLIC_PATH")"
+  encoded_vless_encryption="$(urlencode "${VLESS_ENCRYPTION:-none}")"
   if [[ "${CFG_PLATFORM:-}" == "netlify" ]]; then
     extra_json="$(jq -cn \
       --arg pad "${XPADDING:-10-50}" \
@@ -719,7 +762,7 @@ build_client_link() {
   fi
   encoded_extra="$(urlencode "$extra_json")"
   tag="XHTTP-${CFG_PLATFORM}-fast"
-  CLIENT_LINK="vless://${INBOUND_UUID}@${RELAY_HOST}:443?encryption=none&security=tls&sni=${RELAY_HOST}&fp=chrome&alpn=h2%2Chttp%2F1.1&type=xhttp&host=${RELAY_HOST}&path=${encoded_path}&mode=auto&extra=${encoded_extra}#${tag}"
+  CLIENT_LINK="vless://${INBOUND_UUID}@${RELAY_HOST}:443?encryption=${encoded_vless_encryption}&security=tls&sni=${RELAY_HOST}&fp=chrome&alpn=h2&type=xhttp&host=${RELAY_HOST}&path=${encoded_path}&mode=auto&extra=${encoded_extra}#${tag}"
 }
 
 install_panel() {
@@ -748,6 +791,9 @@ XPADDING_OBFS="${XPADDING_OBFS:-false}"
 XPADDING_KEY="${XPADDING_KEY:-}"
 XPADDING_HEADER="${XPADDING_HEADER:-}"
 SC_MAX_POST_BYTES="${SC_MAX_POST_BYTES:-}"
+VLESS_DECRYPTION="${VLESS_DECRYPTION:-none}"
+VLESS_ENCRYPTION="${VLESS_ENCRYPTION:-none}"
+VLESS_ENC_AUTH="${VLESS_ENC_AUTH:-none}"
 RELAY_URL="${VERCEL_URL}"
 RELAY_HOST="${RELAY_HOST}"
 NETLIFY_PROJECT_DIR="${NETLIFY_PROJECT_DIR:-}"
@@ -785,6 +831,7 @@ case "${1:-}" in
     echo "Domain   : ${CFG_DOMAIN}:${CFG_INBOUND_PORT}"
     [[ "${CFG_DOMAIN_AUTO:-false}" == "true" ]] && echo "Domain mode: auto"
     echo "Path     : ${CFG_RELAY_PATH}"
+    echo "VLESS enc: ${VLESS_ENC_AUTH:-none}"
     echo "Xray     : ${XRAY_INSTALLED_VERSION:-unknown}"
     [[ -n "${XRAY_OFFICIAL_VERSION:-}" ]] && echo "Official : ${XRAY_OFFICIAL_VERSION}"
     echo
@@ -824,6 +871,7 @@ summary() {
   [[ -n "${NETLIFY_PROJECT_DIR:-}" ]] && echo "Netlify files: ${NETLIFY_PROJECT_DIR}"
   [[ -n "${NETLIFY_PROJECT_ZIP:-}" ]] && echo "Netlify zip  : ${NETLIFY_PROJECT_ZIP}"
   echo "Upstream : https://${CFG_DOMAIN}:${CFG_PORT}${CFG_RELAY_PATH}"
+  echo "VLESS enc: ${VLESS_ENC_AUTH:-none}"
   echo "Xray     : ${XRAY_INSTALLED_VERSION:-unknown}"
   [[ -n "${XRAY_OFFICIAL_VERSION:-}" ]] && echo "Official : ${XRAY_OFFICIAL_VERSION}"
   echo
@@ -853,6 +901,7 @@ main() {
   check_dns
   open_firewall_if_needed
   install_xray
+  configure_vless_encryption
   install_acme_and_cert
   configure_xray
   deploy_relay
