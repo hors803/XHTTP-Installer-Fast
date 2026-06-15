@@ -798,7 +798,7 @@ write_cloudflare_project() {
 }
 
 deploy_cloudflare() {
-  step "Prepare Cloudflare Worker relay for manual deploy"
+  step "Prepare Cloudflare Worker relay"
   rm -rf "$WORK_DIR"
   write_cloudflare_project
 
@@ -813,7 +813,39 @@ deploy_cloudflare() {
   ok "Cloudflare Worker files generated: ${CLOUDFLARE_PROJECT_DIR}"
   ok "Cloudflare Worker zip generated: ${CLOUDFLARE_PROJECT_ZIP}"
   warn "No Wrangler, Node.js, or cloudflared is installed on this VPS."
-  info "Deploy worker.js in Cloudflare Workers, then rerun with XHTTP_RELAY_HOST=your-worker.example.workers.dev if the domain changes."
+
+  if [[ -n "${CLOUDFLARE_API_TOKEN:-}" || -n "${CLOUDFLARE_ACCOUNT_ID:-}" || -n "${CLOUDFLARE_WORKER_NAME:-}" ]]; then
+    [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || fail "CLOUDFLARE_API_TOKEN is required for Cloudflare API deploy"
+    [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || fail "CLOUDFLARE_ACCOUNT_ID is required for Cloudflare API deploy"
+    CLOUDFLARE_WORKER_NAME="${CLOUDFLARE_WORKER_NAME:-$CFG_PROJECT_NAME}"
+
+    step "Deploy Cloudflare Worker via REST API"
+    local response subdomain
+    response="$(curl -fsS -X PUT \
+      "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${CLOUDFLARE_WORKER_NAME}" \
+      -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+      -F 'metadata={"main_module":"worker.js"};type=application/json' \
+      -F "worker.js=@${CLOUDFLARE_PROJECT_DIR}/worker.js;type=application/javascript+module")" \
+      || fail "Cloudflare Worker upload failed"
+    echo "$response" | jq -e '.success == true' >/dev/null || { echo "$response"; fail "Cloudflare Worker upload returned an error"; }
+    ok "Cloudflare Worker uploaded: ${CLOUDFLARE_WORKER_NAME}"
+
+    if [[ "$RELAY_HOST" == your-worker.* || -z "$RELAY_HOST" ]]; then
+      subdomain="$(curl -fsS \
+        "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+        | jq -r '.result.subdomain // empty')" || subdomain=""
+      if [[ -n "$subdomain" ]]; then
+        RELAY_HOST="${CLOUDFLARE_WORKER_NAME}.${subdomain}.workers.dev"
+        VERCEL_URL="https://${RELAY_HOST}"
+        ok "Cloudflare Worker host: ${RELAY_HOST}"
+      else
+        warn "Could not detect workers.dev subdomain. Rerun with XHTTP_RELAY_HOST=your-worker.your-subdomain.workers.dev."
+      fi
+    fi
+  else
+    info "Deploy worker.js in Cloudflare Workers, then rerun with XHTTP_RELAY_HOST=your-worker.example.workers.dev if the domain changes."
+  fi
 }
 
 deploy_relay() {

@@ -139,6 +139,22 @@ The installer:
 
 Deploy the generated Worker manually in Cloudflare Workers & Pages. The VPS does not run Wrangler, Node.js, or `cloudflared`.
 
+Automatic API deploy is also supported without Wrangler:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID='your_account_id'
+export CLOUDFLARE_WORKER_NAME='speedtest'
+read -rsp 'Cloudflare API Token: ' CLOUDFLARE_API_TOKEN
+echo
+export CLOUDFLARE_API_TOKEN
+
+XHTTP_PLATFORM=cloudflare \
+XHTTP_ROTATE_SECRETS=1 \
+bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
+When `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_WORKER_NAME` are set, the installer uploads `/opt/xhttp-relay-fast/cloudflare/worker.js` to Cloudflare through the REST API and tries to detect the final `workers.dev` hostname automatically.
+
 Manual deploy steps:
 
 1. Open Cloudflare dashboard.
