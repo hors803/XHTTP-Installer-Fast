@@ -128,6 +128,40 @@ The installer generates two different paths:
 
 The client must use the relay domain and the public path. It must not use the VPS domain or server path directly.
 
+## Personal-Use Protection
+
+The relay includes a random access token by default. The generated VLESS link puts this token into the `path` query string, for example:
+
+```text
+path=/edge-xxxx?k=random-token
+```
+
+The Vercel/Netlify relay checks the token before forwarding traffic to the VPS. Requests that hit the relay path without the correct token return `403 Forbidden`, so random scans do not reach Xray.
+
+If you suspect the link was leaked or Vercel traffic is being abused, rotate the token, UUID, and both paths:
+
+```bash
+VERCEL_TOKEN='your_vercel_token' \
+XHTTP_ROTATE_SECRETS=1 \
+bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
+Then replace the old client link with:
+
+```bash
+xhttp link
+```
+
+If you have a stable client public IP, you can additionally restrict relay access to that IP:
+
+```bash
+VERCEL_TOKEN='your_vercel_token' \
+XHTTP_CLIENT_IPS='203.0.113.10,2001:db8::10' \
+bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
+Do not use `XHTTP_CLIENT_IPS` if your public IP changes frequently or you do not know your public IP. In that case, rely on token/path/UUID rotation.
+
 ## Source IP Headers
 
 The relay templates filter common client IP forwarding headers before sending traffic to Xray:
@@ -202,5 +236,21 @@ Wrong paths should return:
 ```text
 Not Found
 ```
+
+The relay path without the token should return:
+
+```text
+Forbidden
+```
+
+Example:
+
+```bash
+source /etc/xhttp-installer/info.env
+curl -i "${RELAY_URL}${CFG_PUBLIC_PATH}"
+curl -i "${RELAY_URL}${CFG_PUBLIC_PATH}?k=${CFG_RELAY_TOKEN}"
+```
+
+The first command should return `403 Forbidden`. The second command may return an empty 404 from Xray, which is normal for raw curl because it is not valid VLESS/XHTTP traffic.
 
 A raw `curl -d test` request to the XHTTP path may return an empty 404 from Xray. That is expected because it is not valid VLESS/XHTTP traffic.

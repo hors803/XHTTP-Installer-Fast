@@ -102,6 +102,8 @@ load_previous_state() {
   PREV_VLESS_DECRYPTION=""
   PREV_VLESS_ENCRYPTION=""
   PREV_VLESS_ENC_AUTH=""
+  PREV_RELAY_TOKEN=""
+  PREV_CLIENT_IPS=""
 
   [[ -f "$STATE_FILE" ]] || return 0
   # shellcheck source=/dev/null
@@ -120,6 +122,8 @@ load_previous_state() {
   PREV_VLESS_DECRYPTION="${VLESS_DECRYPTION:-}"
   PREV_VLESS_ENCRYPTION="${VLESS_ENCRYPTION:-}"
   PREV_VLESS_ENC_AUTH="${VLESS_ENC_AUTH:-}"
+  PREV_RELAY_TOKEN="${CFG_RELAY_TOKEN:-}"
+  PREV_CLIENT_IPS="${CFG_CLIENT_IPS:-}"
   if [[ -n "$PREV_CFG_DOMAIN" || -n "$PREV_CFG_PLATFORM" ]]; then
     ok "Loaded previous config from $STATE_FILE"
   fi
@@ -138,16 +142,20 @@ sed_escape_replacement() {
 }
 
 render_template_file() {
-  local file="$1" target_json public_json relay_json public_plain
+  local file="$1" target_json public_json relay_json token_json client_ips_json public_plain
   target_json="$(sed_escape_replacement "$(json_escape "https://${CFG_DOMAIN}:${CFG_PORT}")")"
   public_json="$(sed_escape_replacement "$(json_escape "$CFG_PUBLIC_PATH")")"
   relay_json="$(sed_escape_replacement "$(json_escape "$CFG_RELAY_PATH")")"
+  token_json="$(sed_escape_replacement "$(json_escape "${CFG_RELAY_TOKEN:-}")")"
+  client_ips_json="$(sed_escape_replacement "$(printf '%s' "${CFG_CLIENT_IPS:-}" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')")"
   public_plain="$(sed_escape_replacement "$CFG_PUBLIC_PATH")"
 
   sed -i \
     -e "s/__TARGET_BASE_JSON__/${target_json}/g" \
     -e "s/__PUBLIC_PATH_JSON__/${public_json}/g" \
     -e "s/__RELAY_PATH_JSON__/${relay_json}/g" \
+    -e "s/__RELAY_TOKEN_JSON__/${token_json}/g" \
+    -e "s/__CLIENT_IPS_JSON__/${client_ips_json}/g" \
     -e "s/__PUBLIC_PATH__/${public_plain}/g" \
     "$file"
 }
@@ -169,6 +177,17 @@ normalize_path() {
 random_xhttp_path() {
   local prefix="$1"
   printf '/%s-%s-%s' "$prefix" "$(openssl rand -hex 4)" "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 18)"
+}
+
+random_relay_token() {
+  openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32
+}
+
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 uuid_v4() {
@@ -320,12 +339,13 @@ install_xray() {
 
 collect_config() {
   step "Collect config"
-  local random_relay_path random_public_path domain_default domain_input uuid_default
+  local random_relay_path random_public_path domain_default domain_input uuid_default rotate_secrets
   random_relay_path="$(random_xhttp_path "relay")"
   random_public_path="$(random_xhttp_path "edge")"
   while [[ "$random_public_path" == "$random_relay_path" ]]; do
     random_public_path="$(random_xhttp_path "edge")"
   done
+  rotate_secrets="${XHTTP_ROTATE_SECRETS:-false}"
 
   echo "Choose relay platform:"
   echo "  1) Vercel"
@@ -346,11 +366,23 @@ collect_config() {
   CFG_DOMAIN="${XHTTP_DOMAIN:-}"
   CFG_EMAIL="${XHTTP_EMAIL:-${PREV_CFG_EMAIL:-}}"
   CFG_PORT="${XHTTP_PORT:-${PREV_CFG_PORT:-443}}"
-  CFG_RELAY_PATH="${XHTTP_PATH:-${PREV_CFG_RELAY_PATH:-$random_relay_path}}"
-  CFG_PUBLIC_PATH="${XHTTP_PUBLIC_PATH:-${PREV_CFG_PUBLIC_PATH:-$random_public_path}}"
+  if is_truthy "$rotate_secrets"; then
+    CFG_RELAY_PATH="${XHTTP_PATH:-$random_relay_path}"
+    CFG_PUBLIC_PATH="${XHTTP_PUBLIC_PATH:-$random_public_path}"
+  else
+    CFG_RELAY_PATH="${XHTTP_PATH:-${PREV_CFG_RELAY_PATH:-$random_relay_path}}"
+    CFG_PUBLIC_PATH="${XHTTP_PUBLIC_PATH:-${PREV_CFG_PUBLIC_PATH:-$random_public_path}}"
+  fi
   CFG_PROJECT_NAME="${XHTTP_PROJECT_NAME:-${PREV_CFG_PROJECT_NAME:-netfix-$(openssl rand -hex 3)}}"
   CFG_RELAY_HOST="${XHTTP_RELAY_HOST:-${PREV_RELAY_HOST:-}}"
-  CFG_UUID="${XHTTP_UUID:-${PREV_INBOUND_UUID:-}}"
+  if is_truthy "$rotate_secrets"; then
+    CFG_UUID="${XHTTP_UUID:-$(uuid_v4)}"
+    CFG_RELAY_TOKEN="${XHTTP_RELAY_TOKEN:-$(random_relay_token)}"
+  else
+    CFG_UUID="${XHTTP_UUID:-${PREV_INBOUND_UUID:-}}"
+    CFG_RELAY_TOKEN="${XHTTP_RELAY_TOKEN:-${PREV_RELAY_TOKEN:-$(random_relay_token)}}"
+  fi
+  CFG_CLIENT_IPS="${XHTTP_CLIENT_IPS:-${PREV_CLIENT_IPS:-}}"
 
   if [[ -z "$CFG_DOMAIN" ]]; then
     if [[ -n "${PREV_CFG_DOMAIN:-}" && "${PREV_CFG_DOMAIN_AUTO:-false}" != "true" ]]; then
@@ -401,6 +433,9 @@ collect_config() {
   ok "Server path: $CFG_RELAY_PATH"
   ok "Public path: $CFG_PUBLIC_PATH"
   ok "UUID: $CFG_UUID"
+  ok "Relay token: enabled"
+  is_truthy "$rotate_secrets" && ok "Rotated relay token, UUID and paths"
+  [[ -n "${CFG_CLIENT_IPS:-}" ]] && ok "Client IP allowlist: $CFG_CLIENT_IPS"
   [[ "$CFG_PLATFORM" == "netlify" ]] && ok "Netlify host: $CFG_RELAY_HOST"
   [[ "$CFG_PLATFORM" == "vercel" && -n "${CFG_RELAY_HOST:-}" ]] && ok "Vercel client host override: $CFG_RELAY_HOST"
   return 0
@@ -747,8 +782,10 @@ deploy_relay() {
 }
 
 build_client_link() {
-  local encoded_path encoded_extra encoded_vless_encryption extra_json tag
-  encoded_path="$(urlencode "$CFG_PUBLIC_PATH")"
+  local client_path encoded_path encoded_extra encoded_vless_encryption extra_json tag
+  client_path="$CFG_PUBLIC_PATH"
+  [[ -n "${CFG_RELAY_TOKEN:-}" ]] && client_path="${client_path}?k=${CFG_RELAY_TOKEN}"
+  encoded_path="$(urlencode "$client_path")"
   encoded_vless_encryption="$(urlencode "${VLESS_ENCRYPTION:-none}")"
   if [[ "${CFG_PLATFORM:-}" == "netlify" ]]; then
     extra_json="$(jq -cn \
@@ -794,6 +831,8 @@ SC_MAX_POST_BYTES="${SC_MAX_POST_BYTES:-}"
 VLESS_DECRYPTION="${VLESS_DECRYPTION:-none}"
 VLESS_ENCRYPTION="${VLESS_ENCRYPTION:-none}"
 VLESS_ENC_AUTH="${VLESS_ENC_AUTH:-none}"
+CFG_RELAY_TOKEN="${CFG_RELAY_TOKEN:-}"
+CFG_CLIENT_IPS="${CFG_CLIENT_IPS:-}"
 RELAY_URL="${VERCEL_URL}"
 RELAY_HOST="${RELAY_HOST}"
 NETLIFY_PROJECT_DIR="${NETLIFY_PROJECT_DIR:-}"

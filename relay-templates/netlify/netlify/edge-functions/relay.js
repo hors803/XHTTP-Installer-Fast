@@ -3,6 +3,8 @@ export const config = { path: "/*" };
 const TARGET_BASE = __TARGET_BASE_JSON__;
 const PUBLIC_PATH = __PUBLIC_PATH_JSON__;
 const RELAY_PATH = __RELAY_PATH_JSON__;
+const RELAY_TOKEN = __RELAY_TOKEN_JSON__;
+const ALLOWED_CLIENT_IPS = __CLIENT_IPS_JSON__;
 
 function mapPath(pathname) {
   if (pathname === PUBLIC_PATH) return RELAY_PATH;
@@ -12,6 +14,17 @@ function mapPath(pathname) {
   return null;
 }
 
+function clientIp(request) {
+  const forwarded = request.headers.get("x-forwarded-for") || "";
+  const first = forwarded.split(",")[0].trim();
+  return first || request.headers.get("x-real-ip") || "";
+}
+
+function isAllowedClient(request) {
+  if (!ALLOWED_CLIENT_IPS.length) return true;
+  return ALLOWED_CLIENT_IPS.includes(clientIp(request));
+}
+
 export default async function handler(request) {
   try {
     const url = new URL(request.url);
@@ -19,6 +32,11 @@ export default async function handler(request) {
 
     const upstreamPath = mapPath(url.pathname);
     if (!upstreamPath) return new Response("Not Found", { status: 404 });
+    if (!isAllowedClient(request)) return new Response("Forbidden", { status: 403 });
+    if (RELAY_TOKEN && url.searchParams.get("k") !== RELAY_TOKEN) {
+      return new Response("Forbidden", { status: 403 });
+    }
+    url.searchParams.delete("k");
 
     const headers = new Headers();
     for (const [key, value] of request.headers) {
@@ -47,7 +65,8 @@ export default async function handler(request) {
       opts.body = request.body;
     }
 
-    const upstream = await fetch(TARGET_BASE + upstreamPath + url.search, opts);
+    const search = url.searchParams.toString();
+    const upstream = await fetch(TARGET_BASE + upstreamPath + (search ? "?" + search : ""), opts);
     const responseHeaders = new Headers();
     for (const [key, value] of upstream.headers) {
       if (key.toLowerCase() !== "transfer-encoding") {
