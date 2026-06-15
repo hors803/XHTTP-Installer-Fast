@@ -830,6 +830,17 @@ deploy_cloudflare() {
     echo "$response" | jq -e '.success == true' >/dev/null || { echo "$response"; fail "Cloudflare Worker upload returned an error"; }
     ok "Cloudflare Worker uploaded: ${CLOUDFLARE_WORKER_NAME}"
 
+    response="$(curl -fsS -X POST \
+      "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${CLOUDFLARE_WORKER_NAME}/subdomain" \
+      -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+      -H "Content-Type: application/json" \
+      --data '{"enabled":true}')" || warn "Could not enable workers.dev route for ${CLOUDFLARE_WORKER_NAME}"
+    if echo "${response:-}" | jq -e '.success == true' >/dev/null 2>&1; then
+      ok "Cloudflare workers.dev route enabled"
+    elif [[ -n "${response:-}" ]]; then
+      warn "Cloudflare workers.dev route was not enabled automatically"
+    fi
+
     if [[ "$RELAY_HOST" == your-worker.* || -z "$RELAY_HOST" ]]; then
       subdomain="$(curl -fsS \
         "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
