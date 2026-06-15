@@ -147,7 +147,7 @@ render_template_file() {
   public_json="$(sed_escape_replacement "$(json_escape "$CFG_PUBLIC_PATH")")"
   relay_json="$(sed_escape_replacement "$(json_escape "$CFG_RELAY_PATH")")"
   token_json="$(sed_escape_replacement "$(json_escape "${CFG_RELAY_TOKEN:-}")")"
-  client_ips_json="$(sed_escape_replacement "$(printf '%s' "${CFG_CLIENT_IPS:-}" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')")"
+  client_ips_json="$(sed_escape_replacement "$(jq -cn --arg v "${CFG_CLIENT_IPS:-}" '$v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')")"
   public_plain="$(sed_escape_replacement "$CFG_PUBLIC_PATH")"
   project_plain="$(sed_escape_replacement "$CFG_PROJECT_NAME")"
 
