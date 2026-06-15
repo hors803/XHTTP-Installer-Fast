@@ -6,6 +6,7 @@ Supported relay modes:
 
 - Vercel: deployed by REST API. No Vercel CLI is installed on the VPS.
 - Netlify: generates Git/manual deploy files. No Node.js, npm, or Netlify CLI is installed on the VPS.
+- Cloudflare Worker: generates manual deploy files. No Node.js, npm, Wrangler, or cloudflared is installed on the VPS.
 
 ## One-Line Install
 
@@ -30,6 +31,12 @@ For Netlify Git/manual deploy:
 
 ```bash
 XHTTP_RELAY_HOST='your-site.netlify.app' bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
+```
+
+For Cloudflare Worker manual deploy:
+
+```bash
+XHTTP_RELAY_HOST='your-worker.your-subdomain.workers.dev' bash <(curl -fsSL https://raw.githubusercontent.com/hors803/XHTTP-Installer-Fast/main/install.sh)
 ```
 
 ## VPS Requirements
@@ -118,6 +125,30 @@ The installer:
 4. Prints the VLESS link using `XHTTP_RELAY_HOST`.
 
 Deploy the generated Netlify project through GitHub/Netlify UI. The VPS does not run Netlify CLI.
+
+## Cloudflare Worker Flow
+
+Choose platform `3`.
+
+The installer:
+
+1. Configures Xray VLESS + XHTTP + TLS on the VPS.
+2. Generates a Cloudflare Worker project under `/opt/xhttp-relay-fast/cloudflare`.
+3. Generates `/opt/xhttp-relay-fast/cloudflare-worker.zip`.
+4. Prints the VLESS link using `XHTTP_RELAY_HOST`.
+
+Deploy the generated Worker manually in Cloudflare Workers & Pages. The VPS does not run Wrangler, Node.js, or `cloudflared`.
+
+Manual deploy steps:
+
+1. Open Cloudflare dashboard.
+2. Go to Workers & Pages.
+3. Create a Worker.
+4. Paste the generated `/opt/xhttp-relay-fast/cloudflare/worker.js` content into the Worker editor, or upload the generated project from another machine.
+5. Deploy the Worker.
+6. If the Worker domain is different from the value used during install, rerun the installer with `XHTTP_RELAY_HOST='your-worker.your-subdomain.workers.dev'`.
+
+Do not enable Cloudflare Access for this relay. Browser login protections are not understood by Xray/v2rayN clients and will block the node.
 
 ## Important Path Rules
 
@@ -221,7 +252,7 @@ The uninstall command removes VPS-side files only:
 - `/root/.acme.sh`
 - `/swapfile-xhttp` if it exists
 
-It does not remove Vercel, Netlify, or GitHub projects from provider dashboards.
+It does not remove Vercel, Netlify, Cloudflare, or GitHub projects from provider dashboards.
 
 ## Verify
 

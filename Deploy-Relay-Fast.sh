@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # XHTTP Installer - fast relay mode
-# Keeps Vercel/Netlify relay. Vercel uses REST API; Netlify uses Git/manual deploy files.
+# Keeps Vercel/Netlify/Cloudflare relay. Vercel uses REST API; Netlify/Cloudflare use manual deploy files.
 set -euo pipefail
 
 LOG_FILE="/tmp/xhttp-relay-fast-install.log"
@@ -67,7 +67,7 @@ uninstall_xhttp() {
   fi
 
   ok "Uninstall complete"
-  warn "Vercel/Netlify/GitHub relay projects are not removed from provider dashboards."
+  warn "Vercel/Netlify/Cloudflare/GitHub relay projects are not removed from provider dashboards."
 }
 
 read_default() {
@@ -142,13 +142,14 @@ sed_escape_replacement() {
 }
 
 render_template_file() {
-  local file="$1" target_json public_json relay_json token_json client_ips_json public_plain
+  local file="$1" target_json public_json relay_json token_json client_ips_json public_plain project_plain
   target_json="$(sed_escape_replacement "$(json_escape "https://${CFG_DOMAIN}:${CFG_PORT}")")"
   public_json="$(sed_escape_replacement "$(json_escape "$CFG_PUBLIC_PATH")")"
   relay_json="$(sed_escape_replacement "$(json_escape "$CFG_RELAY_PATH")")"
   token_json="$(sed_escape_replacement "$(json_escape "${CFG_RELAY_TOKEN:-}")")"
   client_ips_json="$(sed_escape_replacement "$(printf '%s' "${CFG_CLIENT_IPS:-}" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')")"
   public_plain="$(sed_escape_replacement "$CFG_PUBLIC_PATH")"
+  project_plain="$(sed_escape_replacement "$CFG_PROJECT_NAME")"
 
   sed -i \
     -e "s/__TARGET_BASE_JSON__/${target_json}/g" \
@@ -157,6 +158,7 @@ render_template_file() {
     -e "s/__RELAY_TOKEN_JSON__/${token_json}/g" \
     -e "s/__CLIENT_IPS_JSON__/${client_ips_json}/g" \
     -e "s/__PUBLIC_PATH__/${public_plain}/g" \
+    -e "s/__PROJECT_NAME__/${project_plain}/g" \
     "$file"
 }
 
@@ -347,19 +349,26 @@ collect_config() {
   done
   rotate_secrets="${XHTTP_ROTATE_SECRETS:-false}"
 
-  echo "Choose relay platform:"
-  echo "  1) Vercel"
-  echo "  2) Netlify"
   local choice platform_default
   case "${PREV_CFG_PLATFORM:-}" in
     vercel) platform_default="1" ;;
     netlify) platform_default="2" ;;
+    cloudflare) platform_default="3" ;;
     *) platform_default="1" ;;
   esac
-  choice="$(read_default "Platform" "$platform_default")"
+  if [[ -n "${XHTTP_PLATFORM:-}" ]]; then
+    choice="$XHTTP_PLATFORM"
+  else
+    echo "Choose relay platform:"
+    echo "  1) Vercel"
+    echo "  2) Netlify"
+    echo "  3) Cloudflare Worker"
+    choice="$(read_default "Platform" "$platform_default")"
+  fi
   case "$choice" in
     1|vercel|Vercel) CFG_PLATFORM="vercel" ;;
     2|netlify|Netlify) CFG_PLATFORM="netlify" ;;
+    3|cloudflare|Cloudflare|cf|CF) CFG_PLATFORM="cloudflare" ;;
     *) fail "Invalid platform: $choice" ;;
   esac
 
@@ -414,8 +423,14 @@ collect_config() {
   CFG_UUID="$(echo "$CFG_UUID" | tr '[:upper:]' '[:lower:]')"
   is_uuid_v4 "$CFG_UUID" || fail "UUID must be standard UUID v4 format"
   CFG_PROJECT_NAME="$(read_default "Relay project name" "$CFG_PROJECT_NAME")"
-  if [[ "$CFG_PLATFORM" == "netlify" ]]; then
+  if [[ "$CFG_PLATFORM" == "netlify" && -n "${XHTTP_RELAY_HOST:-}" ]]; then
+    CFG_RELAY_HOST="$(sanitize_domain "$XHTTP_RELAY_HOST")"
+  elif [[ "$CFG_PLATFORM" == "cloudflare" && -n "${XHTTP_RELAY_HOST:-}" ]]; then
+    CFG_RELAY_HOST="$(sanitize_domain "$XHTTP_RELAY_HOST")"
+  elif [[ "$CFG_PLATFORM" == "netlify" ]]; then
     CFG_RELAY_HOST="$(sanitize_domain "$(read_default "Netlify site domain after Git deploy, or leave placeholder" "${CFG_RELAY_HOST:-xhttp-git-xxxxxx.netlify.app}")")"
+  elif [[ "$CFG_PLATFORM" == "cloudflare" ]]; then
+    CFG_RELAY_HOST="$(sanitize_domain "$(read_default "Cloudflare Worker domain after deploy, or leave placeholder" "${CFG_RELAY_HOST:-your-worker.your-subdomain.workers.dev}")")"
   elif [[ -n "${XHTTP_RELAY_HOST:-}" ]]; then
     CFG_RELAY_HOST="$(sanitize_domain "$XHTTP_RELAY_HOST")"
   fi
@@ -437,6 +452,7 @@ collect_config() {
   is_truthy "$rotate_secrets" && ok "Rotated relay token, UUID and paths"
   [[ -n "${CFG_CLIENT_IPS:-}" ]] && ok "Client IP allowlist: $CFG_CLIENT_IPS"
   [[ "$CFG_PLATFORM" == "netlify" ]] && ok "Netlify host: $CFG_RELAY_HOST"
+  [[ "$CFG_PLATFORM" == "cloudflare" ]] && ok "Cloudflare Worker host: $CFG_RELAY_HOST"
   [[ "$CFG_PLATFORM" == "vercel" && -n "${CFG_RELAY_HOST:-}" ]] && ok "Vercel client host override: $CFG_RELAY_HOST"
   return 0
 }
@@ -773,11 +789,40 @@ deploy_netlify() {
   info "Deploy ${NETLIFY_PROJECT_DIR} from GitHub/Netlify UI, then make sure the Netlify site domain is: ${RELAY_HOST}"
 }
 
+write_cloudflare_project() {
+  local src="${TEMPLATE_DIR}/cloudflare"
+  [[ -d "$src" ]] || fail "Missing template directory: $src"
+  mkdir -p "$WORK_DIR"
+  cp -R "$src" "$WORK_DIR/cloudflare"
+  render_template_tree "$WORK_DIR/cloudflare"
+}
+
+deploy_cloudflare() {
+  step "Prepare Cloudflare Worker relay for manual deploy"
+  rm -rf "$WORK_DIR"
+  write_cloudflare_project
+
+  local zip_path="${WORK_DIR}/cloudflare-worker.zip"
+  (cd "$WORK_DIR/cloudflare" && zip -qr "$zip_path" .)
+
+  RELAY_HOST="$CFG_RELAY_HOST"
+  VERCEL_URL="https://${RELAY_HOST}"
+  CLOUDFLARE_PROJECT_DIR="${WORK_DIR}/cloudflare"
+  CLOUDFLARE_PROJECT_ZIP="$zip_path"
+
+  ok "Cloudflare Worker files generated: ${CLOUDFLARE_PROJECT_DIR}"
+  ok "Cloudflare Worker zip generated: ${CLOUDFLARE_PROJECT_ZIP}"
+  warn "No Wrangler, Node.js, or cloudflared is installed on this VPS."
+  info "Deploy worker.js in Cloudflare Workers, then rerun with XHTTP_RELAY_HOST=your-worker.example.workers.dev if the domain changes."
+}
+
 deploy_relay() {
   if [[ "$CFG_PLATFORM" == "vercel" ]]; then
     deploy_vercel
-  else
+  elif [[ "$CFG_PLATFORM" == "netlify" ]]; then
     deploy_netlify
+  else
+    deploy_cloudflare
   fi
 }
 
@@ -837,6 +882,8 @@ RELAY_URL="${VERCEL_URL}"
 RELAY_HOST="${RELAY_HOST}"
 NETLIFY_PROJECT_DIR="${NETLIFY_PROJECT_DIR:-}"
 NETLIFY_PROJECT_ZIP="${NETLIFY_PROJECT_ZIP:-}"
+CLOUDFLARE_PROJECT_DIR="${CLOUDFLARE_PROJECT_DIR:-}"
+CLOUDFLARE_PROJECT_ZIP="${CLOUDFLARE_PROJECT_ZIP:-}"
 SSL_CERT="${SSL_CERT}"
 SSL_KEY="${SSL_KEY}"
 CLIENT_LINK="${CLIENT_LINK}"
@@ -867,6 +914,7 @@ case "${1:-}" in
     echo "Platform : ${CFG_PLATFORM}"
     echo "Relay    : ${RELAY_URL}"
     [[ -n "${NETLIFY_PROJECT_DIR:-}" ]] && echo "Netlify files: ${NETLIFY_PROJECT_DIR}"
+    [[ -n "${CLOUDFLARE_PROJECT_DIR:-}" ]] && echo "Cloudflare files: ${CLOUDFLARE_PROJECT_DIR}"
     echo "Domain   : ${CFG_DOMAIN}:${CFG_INBOUND_PORT}"
     [[ "${CFG_DOMAIN_AUTO:-false}" == "true" ]] && echo "Domain mode: auto"
     echo "Path     : ${CFG_RELAY_PATH}"
@@ -893,6 +941,10 @@ health_check() {
     warn "Relay probe skipped. Deploy the generated Netlify project, then rerun with XHTTP_RELAY_HOST=your-site.netlify.app."
     return 0
   fi
+  if [[ "${CFG_PLATFORM:-}" == "cloudflare" && "$RELAY_HOST" == your-worker.* ]]; then
+    warn "Relay probe skipped. Deploy the generated Cloudflare Worker, then rerun with XHTTP_RELAY_HOST=your-worker.example.workers.dev."
+    return 0
+  fi
   relay="$(curl -sk --max-time 12 -o /dev/null -w "%{http_code}" "${VERCEL_URL}${CFG_PUBLIC_PATH}" 2>/dev/null || echo "000")"
   info "Relay HTTP: $relay"
   [[ "$relay" != "000" ]] || warn "Relay probe failed. Check platform deployment logs and VPS firewall/security group."
@@ -909,6 +961,8 @@ summary() {
   echo "Relay    : $VERCEL_URL"
   [[ -n "${NETLIFY_PROJECT_DIR:-}" ]] && echo "Netlify files: ${NETLIFY_PROJECT_DIR}"
   [[ -n "${NETLIFY_PROJECT_ZIP:-}" ]] && echo "Netlify zip  : ${NETLIFY_PROJECT_ZIP}"
+  [[ -n "${CLOUDFLARE_PROJECT_DIR:-}" ]] && echo "Cloudflare files: ${CLOUDFLARE_PROJECT_DIR}"
+  [[ -n "${CLOUDFLARE_PROJECT_ZIP:-}" ]] && echo "Cloudflare zip  : ${CLOUDFLARE_PROJECT_ZIP}"
   echo "Upstream : https://${CFG_DOMAIN}:${CFG_PORT}${CFG_RELAY_PATH}"
   echo "VLESS enc: ${VLESS_ENC_AUTH:-none}"
   echo "Xray     : ${XRAY_INSTALLED_VERSION:-unknown}"
@@ -926,11 +980,18 @@ summary() {
     echo "2. In Netlify, import that GitHub repo and deploy from branch main."
     echo "3. If the Netlify domain changes, rerun with XHTTP_RELAY_HOST=your-site.netlify.app."
   fi
+  if [[ "${CFG_PLATFORM:-}" == "cloudflare" ]]; then
+    echo
+    echo "Cloudflare Worker deploy without CLI:"
+    echo "1. Open Cloudflare Workers & Pages and create a Worker."
+    echo "2. Paste/upload ${CLOUDFLARE_PROJECT_DIR}/worker.js."
+    echo "3. If the Worker domain changes, rerun with XHTTP_RELAY_HOST=your-worker.example.workers.dev."
+  fi
 }
 
 main() {
   echo -e "${C_CYAN}XHTTP Installer - Fast Relay Mode${C_RESET}"
-  echo "Keeps Vercel/Netlify relay. Netlify path does not install Node.js, npm, or Netlify CLI."
+  echo "Keeps Vercel/Netlify/Cloudflare relay. Netlify and Cloudflare paths do not install Node.js, npm, provider CLIs, or cloudflared."
   require_root
   load_previous_state
   detect_os
